@@ -1,0 +1,97 @@
+<html>
+  <head>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.0.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-vis"></script>
+  </head>
+  <body>
+    <script>
+      async function visualizeData(points, featureName) {
+        tfvis.render.scatterplot(
+          { name: `${featureName} vs price` },
+          { values: points, series: ["original"] },
+          {
+            xLabel: featureName,
+            yValue: points
+          }
+        );
+      }
+
+      async function loadData() {
+        return tf.data.csv("http://localhost:8080/kc_house_data.csv");
+      }
+
+      function normalize(tensor) {
+        const max = tensor.max();
+        const min = tensor.min();
+
+        // value - min / max - min
+        return {
+          tensor: tensor.sub(min).div(max.sub(min)),
+          min,
+          max
+        };
+      }
+
+      function desnormalize(tensor, min, max) {
+        // ((max - min) * value) + min
+        return tensor.mul(max.sub(min)).add(min);
+      }
+
+      async function prepareData(data) {
+        const pointsDataSet = data.map(d => ({
+          x: d.sqft_living,
+          y: d.price
+        }));
+        const points = await pointsDataSet.toArray();
+        // cant be splitted in case there an even size of elements
+        if (points.length % 2) {
+          points.pop();
+        }
+        tf.util.shuffle(points);
+
+        visualizeData(points, "Sqft Living");
+
+        const values = points.map(p => p.x);
+        // second param: data points and number of features (only sqft_living
+        const valuesTensor = tf.tensor2d(values, [values.length, 1]);
+        const {
+          max: valuesMax,
+          min: valuesMin,
+          tensor: valuesTensorNormalized
+        } = normalize(valuesTensor);
+
+        const labels = points.map(p => p.y);
+        // second param: data points and number of features (only price)
+        const labelsTensor = tf.tensor2d(labels, [labels.length, 1]);
+        const {
+          max: labelsMax,
+          min: labelsMin,
+          tensor: labelsTensorNormalized
+        } = normalize(tf.tensor2d(labels, [labels.length, 1]));
+
+        const [trainingValuesTensor, testingValuesTensor] = tf.split(
+          valuesTensorNormalized,
+          2
+        );
+        const [trainingLabelsTensor, testingLabelsTensor] = tf.split(
+          labelsTensorNormalized,
+          2
+        );
+
+        return {
+          values,
+          labels,
+          valuesTensor,
+          labelsTensor
+        };
+      }
+
+      async function run() {
+        const data = await loadData();
+        prepareData(data);
+      }
+
+      run();
+    </script>
+  </body>
+</html>
