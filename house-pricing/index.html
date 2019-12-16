@@ -37,6 +37,23 @@
         return tensor.mul(max.sub(min)).add(min);
       }
 
+      function createModelForLinearRegression() {
+        const model = tf.sequential();
+
+        model.add(
+          tf.layers.dense({ units: 1, inputDim: 1, activation: "linear" })
+        );
+
+        const optimizer = tf.train.sgd(0.1);
+        // const optimizer = tf.train.adam();
+        model.compile({
+          loss: "meanSquaredError",
+          optimizer
+        });
+
+        return model;
+      }
+
       async function prepareData(data) {
         const pointsDataSet = data.map(d => ({
           x: d.sqft_living,
@@ -81,14 +98,63 @@
         return {
           values,
           labels,
-          valuesTensor,
-          labelsTensor
+          trainingValuesTensor,
+          trainingLabelsTensor,
+          testingValuesTensor,
+          testingLabelsTensor
         };
+      }
+
+      async function trainModel(
+        model,
+        trainingFeaturesTensor,
+        trainingLabelsTensor
+      ) {
+        const { onBatchEnd, onEpochEnd } = tfvis.show.fitCallbacks(
+          { name: "Training Performance" },
+          ["loss"]
+        );
+
+        return model.fit(trainingFeaturesTensor, trainingLabelsTensor, {
+          epochs: 20,
+          validationSplit: 0.2,
+          callbacks: {
+            onEpochEnd
+            // onBatchEnd
+          }
+        });
       }
 
       async function run() {
         const data = await loadData();
-        prepareData(data);
+        const model = createModelForLinearRegression();
+        model.summary();
+        tfvis.show.modelSummary({ name: "model" }, model);
+        const layer = model.getLayer(undefined, 0);
+        tfvis.show.layer({ name: "layer" }, layer);
+        const {
+          trainingValuesTensor,
+          trainingLabelsTensor,
+          testingValuesTensor,
+          testingLabelsTensor
+        } = await prepareData(data);
+        const result = await trainModel(
+          model,
+          trainingValuesTensor,
+          trainingLabelsTensor
+        );
+        const trainingLoss = result.history.loss.pop();
+        console.log(`Training set loss: ${trainingLoss}`);
+
+        const validationLoss = result.history.val_loss.pop();
+        console.log(`Validation set loss: ${validationLoss}`);
+
+        const lossTensor = model.evaluate(
+          testingValuesTensor,
+          testingLabelsTensor
+        );
+        const testingLoss = await lossTensor.dataSync();
+        console.log(`Testing set loss: ${testingLoss}`);
       }
 
       run();
