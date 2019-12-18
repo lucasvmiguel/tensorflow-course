@@ -106,6 +106,38 @@
         return model;
       };
 
+      const createModel = () => {
+        model = tf.sequential();
+        model.add(
+          tf.layers.dense({
+            units: 10,
+            useBias: true,
+            activation: "sigmoid",
+            inputDim: 1
+          })
+        );
+        model.add(
+          tf.layers.dense({
+            units: 10,
+            useBias: true,
+            activation: "sigmoid"
+          })
+        );
+        model.add(
+          tf.layers.dense({
+            units: 1,
+            useBias: true,
+            activation: "sigmoid"
+          })
+        );
+        const optimizer = tf.train.adam();
+        model.compile({
+          loss: "meanSquaredError",
+          optimizer
+        });
+        return model;
+      };
+
       const prepareData = async (data, field) => {
         const pointsDataSet = data.map(d => ({
           x: d[field],
@@ -173,14 +205,12 @@
         }
       ) => {
         const result = await model.fit(featureTensor, labelTensor, {
-          epochs: 20,
+          epochs: 100,
           validationSplit: 0.2,
           callbacks: {
             onEpochEnd
           }
         });
-
-        await model.save(MODEL_LOAD_PATH);
 
         return result;
       };
@@ -210,10 +240,8 @@
       async function run() {
         const field = "sqft_living";
         const data = await loadData();
-        const model = createModelForLinearRegression();
-
+        const model = createModel();
         tfvis.show.modelSummary({ name: "model" }, model);
-        tfvis.show.layer({ name: "layer" }, model.getLayer(undefined, 0));
 
         const {
           points,
@@ -236,7 +264,22 @@
             featureMaxValue,
             labelMinValue,
             labelMaxValue,
-            onEpochEnd: () =>
+            onEpochEnd: (_, logs) => {
+              console.log(logs);
+
+              tfvis.show.layer(
+                { name: "layer 1" },
+                model.getLayer(undefined, 0)
+              );
+              tfvis.show.layer(
+                { name: "layer 2" },
+                model.getLayer(undefined, 1)
+              );
+              tfvis.show.layer(
+                { name: "layer 3" },
+                model.getLayer(undefined, 2)
+              );
+
               visualizePointsAndPredictions(model, {
                 points,
                 featureMinValue,
@@ -245,21 +288,22 @@
                 labelMaxValue,
                 xLabel: field,
                 yLabel: "Price"
-              })
+              });
+            }
           }
         );
-        const trainingLoss = result.history.loss.pop();
-        console.log(`Training set loss: ${trainingLoss}`);
+        // const trainingLoss = result.history.loss.pop();
+        // console.log(`Training set loss: ${trainingLoss}`);
 
-        const validationLoss = result.history.val_loss.pop();
-        console.log(`Validation set loss: ${validationLoss}`);
+        // const validationLoss = result.history.val_loss.pop();
+        // console.log(`Validation set loss: ${validationLoss}`);
 
-        const lossTensor = model.evaluate(
-          testingValuesTensor,
-          testingLabelsTensor
-        );
-        const testingLoss = await lossTensor.dataSync();
-        console.log(`Testing set loss: ${testingLoss}`);
+        // const lossTensor = model.evaluate(
+        //   testingValuesTensor,
+        //   testingLabelsTensor
+        // );
+        // const testingLoss = await lossTensor.dataSync();
+        // console.log(`Testing set loss: ${testingLoss}`);
 
         p = value =>
           predict(model, value, {
