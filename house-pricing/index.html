@@ -1,7 +1,8 @@
 <html>
   <head>
-    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.0.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs/dist/tf.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-vis"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.15/lodash.min.js"></script>
   </head>
   <body>
     <script>
@@ -44,6 +45,23 @@
         });
       };
 
+      const visualizePointsAndClasses = async (
+        model,
+        { data, xLabel, yLabel }
+      ) => {
+        const pointsGrouped = _.groupBy(data, "class");
+
+        visualizeData(
+          Object.values(pointsGrouped),
+          Object.keys(pointsGrouped),
+          {
+            title: `${xLabel} vs ${yLabel}`,
+            xLabel,
+            yLabel
+          }
+        );
+      };
+
       const predictionPoints = (
         model,
         { featureMinValue, featureMaxValue, labelMinValue, labelMaxValue }
@@ -68,16 +86,49 @@
         }));
       };
 
-      const loadDataset = async (xLabel, yLabel) => {
-        const data = tf.data.csv("http://127.0.0.1:8080/kc_house_data.csv");
-        const dataset = data.map(d => ({
+      const loadDataset = async (xLabel, yLabel, classField) => {
+        const response = await fetch(
+          "http://127.0.0.1:8080/kc_house_data.json"
+        );
+        const json = await response.json();
+        const data = tf.data.array(json);
+
+        return data.map(d => ({
           x: d[xLabel],
-          y: d[yLabel]
+          y: d[yLabel],
+          class: d[classField]
         }));
-        return dataset;
       };
 
       const normalize = (tensor, pMin = null, pMax = null) => {
+        const dimensions = tensor.shape.length > 1 && tensor.shape[1];
+
+        if (dimensions && dimensions > 1) {
+          const featuresTensor = tf.split(tensor, dimensions, 1);
+
+          const normalizedFeatures = featuresTensor.map((featureTensor, i) => {
+            return normalize(
+              featureTensor,
+              pMin ? pMin[i] : null,
+              pMax ? pMax[i] : null
+            );
+          });
+
+          const returnTensor = tf.concat(
+            normalizedFeatures.map(f => f.tensor),
+            1
+          );
+
+          return {
+            tensor: tf.concat(
+              normalizedFeatures.map(f => f.tensor),
+              1
+            ),
+            min: normalizedFeatures.map(f => f.min),
+            max: normalizedFeatures.map(f => f.max)
+          };
+        }
+
         const max = pMax || tensor.max();
         const min = pMin || tensor.min();
 
@@ -90,28 +141,40 @@
       };
 
       const desnormalize = (tensor, min, max) => {
+        const dimensions = tensor.shape.length > 1 && tensor.shape[1];
+
+        if (dimensions && dimensions > 1) {
+          const featuresTensor = tf.split(tensor, dimensions, 1);
+
+          const desnormalizedFeatures = featuresTensor.map((featureTensor, i) =>
+            desnormalize(featureTensor, min[i], max[i])
+          );
+
+          return tf.concat(desnormalizedFeatures, 1);
+        }
+
         // ((max - min) * value) + min
         return tensor.mul(max.sub(min)).add(min);
       };
 
-      // const createModelForLinearRegression = () => {
-      //   const model = tf.sequential();
+      const createModelForLinearRegression = () => {
+        const model = tf.sequential();
 
-      //   model.add(
-      //     tf.layers.dense({ units: 1, inputDim: 1, activation: "linear" })
-      //   );
+        model.add(
+          tf.layers.dense({ units: 1, inputDim: 1, activation: "linear" })
+        );
 
-      //   const optimizer = tf.train.sgd(0.1);
-      //   // const optimizer = tf.train.adam();
-      //   model.compile({
-      //     loss: "meanSquaredError",
-      //     optimizer
-      //   });
+        const optimizer = tf.train.sgd(0.1);
+        // const optimizer = tf.train.adam();
+        model.compile({
+          loss: "meanSquaredError",
+          optimizer
+        });
 
-      //   return model;
-      // };
+        return model;
+      };
 
-      const createModel = () => {
+      const createModelForNonLinearPrediction = () => {
         const model = tf.sequential();
         model.add(
           tf.layers.dense({
@@ -143,37 +206,63 @@
         return model;
       };
 
-      const prepareData = async dataset => {
-        const points = await dataset.toArray();
-        console.log(points);
+      const createModelForBinaryClassification = () => {
+        const model = tf.sequential();
+        model.add(
+          tf.layers.dense({
+            units: 10,
+            useBias: true,
+            activation: "sigmoid",
+            inputDim: 2
+          })
+        );
+        model.add(
+          tf.layers.dense({
+            units: 10,
+            useBias: true,
+            activation: "sigmoid"
+          })
+        );
+        model.add(
+          tf.layers.dense({
+            units: 1,
+            useBias: true,
+            activation: "sigmoid"
+          })
+        );
+
+        model.compile({
+          loss: "binaryCrossentropy",
+          optimizer: tf.train.adam()
+        });
+        return model;
+      };
+
+      const prePrepareData = data => {
         // cant be splitted in case there an even size of elements
-        if (points.length % 2) {
-          points.pop();
+        if (data.length % 2) {
+          data.pop();
         }
-        tf.util.shuffle(points);
+        tf.util.shuffle(data);
 
-        const values = points.map(p => p.x);
+        return data;
+      };
 
-        // second param: data points and number of features (only sqft_living)
-        const valuesTensor = tf.tensor2d(values, [values.length, 1]);
+      const posPrepareData = ({ data, featuresTensor, labelsTensor }) => {
         const {
           max: featureMaxValue,
           min: featureMinValue,
-          tensor: valuesTensorNormalized
-        } = normalize(valuesTensor);
+          tensor: featuresTensorNormalized
+        } = normalize(featuresTensor);
 
-        const labels = points.map(p => p.y);
-
-        // second param: data points and number of features (only price)
-        const labelsTensor = tf.tensor2d(labels, [labels.length, 1]);
         const {
           max: labelMaxValue,
           min: labelMinValue,
           tensor: labelsTensorNormalized
-        } = normalize(tf.tensor2d(labels, [labels.length, 1]));
+        } = normalize(labelsTensor);
 
-        const [trainingValuesTensor, testingValuesTensor] = tf.split(
-          valuesTensorNormalized,
+        const [trainingFeaturesTensor, testingFeaturesTensor] = tf.split(
+          featuresTensorNormalized,
           2
         );
         const [trainingLabelsTensor, testingLabelsTensor] = tf.split(
@@ -182,16 +271,40 @@
         );
 
         return {
-          points,
-          trainingValuesTensor,
+          data,
+          trainingFeaturesTensor,
           trainingLabelsTensor,
-          testingValuesTensor,
+          testingFeaturesTensor,
           testingLabelsTensor,
           labelMinValue,
           labelMaxValue,
           featureMinValue,
           featureMaxValue
         };
+      };
+
+      const prepareData = async data => {
+        data = prePrepareData(data);
+
+        const values = data.map(p => p.x);
+
+        // second param: data data and number of features (only sqft_living)
+        const valuesTensor = tf.tensor2d(values, [values.length, 1]);
+        const labelsTensor = tf.tensor2d(labels, [labels.length, 1]);
+
+        return posPrepareData({ data, valuesTensor, labelsTensor });
+      };
+
+      const prepareDataWithMultipleFeature = async data => {
+        data = prePrepareData(data);
+
+        const features = data.map(d => [d.x, d.y]);
+        const featuresTensor = tf.tensor2d(features);
+
+        const labels = data.map(d => d.class);
+        const labelsTensor = tf.tensor2d(labels, [labels.length, 1]);
+
+        return posPrepareData({ data, featuresTensor, labelsTensor });
       };
 
       const trainModel = async (
@@ -213,7 +326,7 @@
 
         const result = await model.fit(featureTensor, labelTensor, {
           batchSize: 32,
-          epochs: 100,
+          epochs: 2,
           validationSplit: 0.2,
           callbacks: {
             onEpochEnd: (epoch, log) => {
@@ -253,46 +366,61 @@
       async function run() {
         const xLabel = "sqft_living";
         const yLabel = "price";
-        const data = await loadDataset(xLabel, yLabel);
-        const model = createModel();
+        const classField = "waterfront";
+        const dataset = await loadDataset(xLabel, yLabel, classField);
+        const data = await dataset.toArray();
+        const model = createModelForBinaryClassification();
         tfvis.show.modelSummary({ name: "model" }, model);
 
         const {
-          points,
-          trainingValuesTensor,
+          data: points,
+          trainingFeaturesTensor,
           trainingLabelsTensor,
-          testingValuesTensor,
+          testingFeaturesTensor,
           testingLabelsTensor,
           labelMaxValue,
           labelMinValue,
           featureMaxValue,
           featureMinValue
-        } = await prepareData(data);
-
-        const result = await trainModel(
-          model,
-          trainingValuesTensor,
+        } = await prepareDataWithMultipleFeature(data);
+        console.log({
+          points,
+          trainingFeaturesTensor,
           trainingLabelsTensor,
-          {
-            featureMinValue,
-            featureMaxValue,
-            labelMinValue,
-            labelMaxValue,
-            onEpochEnd: logs => {
-              console.log(logs);
+          testingFeaturesTensor,
+          testingLabelsTensor,
+          labelMaxValue,
+          labelMinValue,
+          featureMaxValue,
+          featureMinValue
+        });
 
-              visualizePointsAndPredictions(model, {
-                points,
-                featureMinValue,
-                featureMaxValue,
-                labelMinValue,
-                labelMaxValue,
-                xLabel,
-                yLabel
-              });
-            }
-          }
-        );
+        visualizePointsAndClasses(model, { data, yLabel, xLabel });
+
+        // const result = await trainModel(
+        //   model,
+        //   trainingFeaturesTensor,
+        //   trainingLabelsTensor,
+        //   {
+        //     featureMinValue,
+        //     featureMaxValue,
+        //     labelMinValue,
+        //     labelMaxValue,
+        //     onEpochEnd: logs => {
+        //       console.log(logs);
+
+        //       // visualizePointsAndPredictions(model, {
+        //       //   points,
+        //       //   featureMinValue,
+        //       //   featureMaxValue,
+        //       //   labelMinValue,
+        //       //   labelMaxValue,
+        //       //   xLabel,
+        //       //   yLabel
+        //       // });
+        //     }
+        //   }
+        // );
         // const trainingLoss = result.history.loss.pop();
         // console.log(`Training set loss: ${trainingLoss}`);
 
